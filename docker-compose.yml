@@ -1,7 +1,7 @@
 services:
   nginx:
     image: nginx:1.27.0-alpine
-    container_name: nginx
+    container_name: ops_nginx
     ports:
       - 80:80
     volumes:
@@ -12,7 +12,7 @@ services:
       - php
   php:
     build: ./docker/php
-    container_name: testphp
+    container_name: ops_php
     ports:
       - 9000:9000
     volumes:
@@ -21,11 +21,13 @@ services:
       - postgres
   postgres:
     image: postgres:16.3
-    container_name: postgres
+    container_name: ops_postgres
     environment:
       POSTGRES_USER: root
       POSTGRES_PASSWORD: root
       POSTGRES_DB: testdb
+    volumes:
+      - ./docker/postgres/pgdata:/var/lib/postgresql/data
     ports:
       - 5432:5432
     restart: always
