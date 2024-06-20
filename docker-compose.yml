@@ -1,0 +1,31 @@
+services:
+  nginx:
+    image: nginx:1.27.0-alpine
+    container_name: nginx
+    ports:
+      - 80:80
+    volumes:
+      - ./docker/nginx/config:/etc/nginx/conf.d
+      - ./docker/nginx/logs:/var/log/nginx/
+      - ./app:/var/www/yii2
+    links:
+      - php
+  php:
+    build: ./docker/php
+    container_name: testphp
+    ports:
+      - 9000:9000
+    volumes:
+      - ./app:/var/www/yii2
+    links:
+      - postgres
+  postgres:
+    image: postgres:16.3
+    container_name: postgres
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: testdb
+    ports:
+      - 5432:5432
+    restart: always
