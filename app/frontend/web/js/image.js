@@ -9,13 +9,13 @@ $('.action-button').on('click', function(e) {
     let imageId = $(this).data('id');
     let path = $(this).data('path');
 
-    $.post('/index.php?r=image/process-image', {
+    $.post('/index.php?r=site/process-image', {
         id: imageId,
         accept: accept,
         path: path
     })
     .then(function() {
-        $.get('/index.php?r=image/next-image').then(function(data) {
+        $.get('/index.php?r=site/next-image').then(function(data) {
             let parsed = JSON.parse(data);
             if (parsed.isError) {
                 $('#image-container').remove();

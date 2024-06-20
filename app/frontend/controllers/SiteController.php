@@ -2,19 +2,9 @@
 
 namespace frontend\controllers;
 
-use frontend\models\ResendVerificationEmailForm;
-use frontend\models\VerifyEmailForm;
-use Yii;
-use yii\base\InvalidArgumentException;
-use yii\web\BadRequestHttpException;
+use common\models\Image;
 use yii\web\Controller;
-use yii\filters\VerbFilter;
-use yii\filters\AccessControl;
-use common\models\LoginForm;
-use frontend\models\PasswordResetRequestForm;
-use frontend\models\ResetPasswordForm;
-use frontend\models\SignupForm;
-use frontend\models\ContactForm;
+use yii\web\Request;
 
 /**
  * Site controller
@@ -24,236 +14,133 @@ class SiteController extends Controller
     /**
      * {@inheritdoc}
      */
-    public function behaviors()
-    {
-        return [
-            'access' => [
-                'class' => AccessControl::class,
-                'only' => ['logout', 'signup'],
-                'rules' => [
-                    [
-                        'actions' => ['signup'],
-                        'allow' => true,
-                        'roles' => ['?'],
-                    ],
-                    [
-                        'actions' => ['logout'],
-                        'allow' => true,
-                        'roles' => ['@'],
-                    ],
-                ],
-            ],
-            'verbs' => [
-                'class' => VerbFilter::class,
-                'actions' => [
-                    'logout' => ['post'],
-                ],
-            ],
-        ];
-    }
-
-    /**
-     * {@inheritdoc}
-     */
     public function actions()
     {
         return [
             'error' => [
                 'class' => \yii\web\ErrorAction::class,
             ],
-            'captcha' => [
-                'class' => \yii\captcha\CaptchaAction::class,
-                'fixedVerifyCode' => YII_ENV_TEST ? 'testme' : null,
-            ],
         ];
     }
 
-    /**
-     * Displays homepage.
-     *
-     * @return mixed
-     */
+    private function getLastImage()
+    {
+        $from = \Yii::$app->params['image.id.from'] ?? 1;
+        $to = \Yii::$app->params['image.id.to'] ?? 100;
+
+        $imageIds = Image::find()
+            ->select('image_foreign_id')
+            ->where([
+                '>=', 'image_foreign_id', $from,
+            ])
+            ->andWhere([
+                '<=', 'image_foreign_id', $to,
+            ])
+            ->orderBy(['image_foreign_id' => SORT_ASC])
+            ->column();
+
+        if (empty($imageIds)) {
+            return $from;
+        }
+
+        $prevId = 0;
+
+        foreach ($imageIds as $key => $id) {
+            if ($key == array_key_last($imageIds) && $id < $to) {
+                return $id + 1;
+            }
+            if ($prevId + 1 < $id) {
+                return $prevId + 1;
+            }
+            $prevId++;
+        }
+
+        return false;
+    }
+
+    private function getImageData()
+    {
+        $id = $this->getLastImage();
+
+        if (!$id) {
+            return [
+                'isError' => true,
+                'errorMessage' => \Yii::t('app', 'You have already rated all images from this range!')
+            ];
+        }
+
+        $useProxy = \Yii::$app->params['useProxy'] ?? false;
+        $proxy = \Yii::$app->params['proxy'];
+        $imageWidth = \Yii::$app->params['image.width'] ?? 600;
+        $imageHeight = \Yii::$app->params['image.height'] ?? 500;
+        $imageUrlMain = \Yii::$app->params['image.url.main'] ?? 'https://picsum.photos/id';
+
+        $url = "$imageUrlMain/$id/$imageWidth/$imageHeight";
+
+        $ch = curl_init();
+
+        if ($useProxy) {
+            curl_setopt($ch, CURLOPT_PROXY, $proxy);
+        }
+
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+        $curlResult = curl_exec($ch);
+
+        if (curl_error($ch)) {
+            return [
+                'isError' => true,
+                'errorMessage' => \Yii::t('app', 'Image receiving error!')
+            ];
+        }
+
+        curl_close($ch);
+
+        $image = base64_encode($curlResult);
+
+        return [
+            'id' => $id,
+            'image' => $image,
+            'isError' => false,
+            'path' => $url
+        ];
+    }
+
     public function actionIndex()
     {
-        return $this->render('index');
+        \Yii::$app->view->title = 'Test image application';
+        $imageData = $this->getImageData();
+
+        if ($imageData['isError']) {
+            return $this->render('index', [
+                'isError' => true,
+                'errorMessage' => $imageData['errorMessage']
+            ]);
+        }
+
+        return $this->render('index', $imageData);
     }
 
-    /**
-     * Logs in a user.
-     *
-     * @return mixed
-     */
-    public function actionLogin()
+    public function actionNextImage()
     {
-        if (!Yii::$app->user->isGuest) {
-            return $this->goHome();
-        }
-
-        $model = new LoginForm();
-        if ($model->load(Yii::$app->request->post()) && $model->login()) {
-            return $this->goBack();
-        }
-
-        $model->password = '';
-
-        return $this->render('login', [
-            'model' => $model,
-        ]);
+        return json_encode($this->getImageData());
     }
 
-    /**
-     * Logs out the current user.
-     *
-     * @return mixed
-     */
-    public function actionLogout()
+    public function actionProcessImage(Request $request)
     {
-        Yii::$app->user->logout();
+        $model = new Image();
+        $model->load([
+            'image_foreign_id' => filter_var($request->post('id'), FILTER_SANITIZE_NUMBER_INT),
+            'is_accepted' => filter_var($request->post('accept'), FILTER_VALIDATE_BOOLEAN),
+            'path' => $request->post('path')
+        ], '');
 
-        return $this->goHome();
-    }
-
-    /**
-     * Displays contact page.
-     *
-     * @return mixed
-     */
-    public function actionContact()
-    {
-        $model = new ContactForm();
-        if ($model->load(Yii::$app->request->post()) && $model->validate()) {
-            if ($model->sendEmail(Yii::$app->params['adminEmail'])) {
-                Yii::$app->session->setFlash('success', 'Thank you for contacting us. We will respond to you as soon as possible.');
-            } else {
-                Yii::$app->session->setFlash('error', 'There was an error sending your message.');
-            }
-
-            return $this->refresh();
+        if (!$model->validate() || !$model->save()) {
+            return json_encode($model->errors);
         }
 
-        return $this->render('contact', [
-            'model' => $model,
-        ]);
-    }
-
-    /**
-     * Displays about page.
-     *
-     * @return mixed
-     */
-    public function actionAbout()
-    {
-        return $this->render('about');
-    }
-
-    /**
-     * Signs user up.
-     *
-     * @return mixed
-     */
-    public function actionSignup()
-    {
-        $model = new SignupForm();
-        if ($model->load(Yii::$app->request->post()) && $model->signup()) {
-            Yii::$app->session->setFlash('success', 'Thank you for registration. Please check your inbox for verification email.');
-            return $this->goHome();
-        }
-
-        return $this->render('signup', [
-            'model' => $model,
-        ]);
-    }
-
-    /**
-     * Requests password reset.
-     *
-     * @return mixed
-     */
-    public function actionRequestPasswordReset()
-    {
-        $model = new PasswordResetRequestForm();
-        if ($model->load(Yii::$app->request->post()) && $model->validate()) {
-            if ($model->sendEmail()) {
-                Yii::$app->session->setFlash('success', 'Check your email for further instructions.');
-
-                return $this->goHome();
-            }
-
-            Yii::$app->session->setFlash('error', 'Sorry, we are unable to reset password for the provided email address.');
-        }
-
-        return $this->render('requestPasswordResetToken', [
-            'model' => $model,
-        ]);
-    }
-
-    /**
-     * Resets password.
-     *
-     * @param string $token
-     * @return mixed
-     * @throws BadRequestHttpException
-     */
-    public function actionResetPassword($token)
-    {
-        try {
-            $model = new ResetPasswordForm($token);
-        } catch (InvalidArgumentException $e) {
-            throw new BadRequestHttpException($e->getMessage());
-        }
-
-        if ($model->load(Yii::$app->request->post()) && $model->validate() && $model->resetPassword()) {
-            Yii::$app->session->setFlash('success', 'New password saved.');
-
-            return $this->goHome();
-        }
-
-        return $this->render('resetPassword', [
-            'model' => $model,
-        ]);
-    }
-
-    /**
-     * Verify email address
-     *
-     * @param string $token
-     * @throws BadRequestHttpException
-     * @return yii\web\Response
-     */
-    public function actionVerifyEmail($token)
-    {
-        try {
-            $model = new VerifyEmailForm($token);
-        } catch (InvalidArgumentException $e) {
-            throw new BadRequestHttpException($e->getMessage());
-        }
-        if (($user = $model->verifyEmail()) && Yii::$app->user->login($user)) {
-            Yii::$app->session->setFlash('success', 'Your email has been confirmed!');
-            return $this->goHome();
-        }
-
-        Yii::$app->session->setFlash('error', 'Sorry, we are unable to verify your account with provided token.');
-        return $this->goHome();
-    }
-
-    /**
-     * Resend verification email
-     *
-     * @return mixed
-     */
-    public function actionResendVerificationEmail()
-    {
-        $model = new ResendVerificationEmailForm();
-        if ($model->load(Yii::$app->request->post()) && $model->validate()) {
-            if ($model->sendEmail()) {
-                Yii::$app->session->setFlash('success', 'Check your email for further instructions.');
-                return $this->goHome();
-            }
-            Yii::$app->session->setFlash('error', 'Sorry, we are unable to resend verification email for the provided email address.');
-        }
-
-        return $this->render('resendVerificationEmail', [
-            'model' => $model
-        ]);
+        return true;
     }
 }
